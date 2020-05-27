@@ -1,6 +1,6 @@
 # Scrooge-Coin
 
-This is a simulation of `Scrooge Coin`: a simple crypto-currency system.
+This is a simulation of `Scrooge Coin`: a simple crypto-currency system using python.
 
 The system includes 100 users. Initially, Scrooge creates 1000 coins and pays each user 10 coins.
 
