@@ -305,12 +305,15 @@ class HashPtr():
         else:
             return "TransID:" + self.trans.ID + "-Hash:" + self.hash.hex()
 
+
+
 class FinalHashPtr(HashPtr):
     #Hash pointer of the final block
     def __init__(self, block, hash, scrooge_sig):
         super().__init__(block, hash)
         self.scrooge_sig = scrooge_sig
     
+
 
 class MerkleTree():
     '''
@@ -402,13 +405,6 @@ class MerkleTree():
         self.parent.update_hashes(False) # recursion step
 
 
-def print_pbk_key(key):
-
-    key = key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
-    key = key.replace("\n", "")
-    key = key.replace("-----BEGIN PUBLIC KEY-----", "")
-    key = key.replace("-----END PUBLIC KEY-----", "")
-    return key
 
 class MerkleRoot(): # full merkle tree (singleton)
     __instance = None
@@ -483,7 +479,15 @@ class MerkleRoot(): # full merkle tree (singleton)
         nodes.append(tree)
         self.expand_treeH(nodes,left_sibling)
 
-            
+
+
+def print_pbk_key(key):
+
+    key = key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
+    key = key.replace("\n", "")
+    key = key.replace("-----BEGIN PUBLIC KEY-----", "")
+    key = key.replace("-----END PUBLIC KEY-----", "")
+    return key
 
 
 
