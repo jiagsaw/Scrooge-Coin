@@ -3,6 +3,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import dsa
+import math
 
 
 class Coin():
@@ -54,14 +55,11 @@ class User():
     
     def sign(self, coin):
         return self._private_key.sign(coin, hashes.SHA256())
-        
-        
-
 
 class Scrooge(User):
      
     __instance = None
-
+    @staticmethod
     def getInstance():
       """ Static access method. """
       if Scrooge.__instance == None:
@@ -253,16 +251,178 @@ class HashPtr():
     def __str__(self):
         return self.trans.__str__() + bytes(self.hash.__str__(), encoding='utf-8')
 
-
-
 class FinalHashPtr(HashPtr):
     #Hash pointer of the final block
     def __init__(self, block, hash, scrooge_sig):
         super().__init__(block, hash)
         self.scrooge_sig = scrooge_sig
 
+class MerkleTree():
+    '''
+    A merkle tree could either be a leaf node or a non-leaf node
+    Each node (leaf/non-leaf) has:
+        a left child
+        a right child
+        a parent node
+        a hash of the left child
+        a hash of the right child
+        a hash (combination of the two children hashes)
+    A leaf node's children are transactions, while a non-leaf node's children are merkle trees.
+    A leaf node is linked to its children transactions (one-way link), 
+    while in a non-leaf node the parent is linked to the children and the children to the parent (double-link).
+    '''
+
+    def __init__(self, left_tree, right_tree, left_sibling):
+        if(left_tree == None and right_tree == None): # leaf node pointing to None transactions
+            self.hashL = left_sibling.hashL # replicate left sibling's hash
+            self.hashR = left_sibling.hashR
+            self.hash = self.hashL + self.hashR
+            self.left_tree = left_tree
+            self.right_tree = right_tree
+            self.parent = None
+
+        elif isinstance(left_tree,Transaction) : # leaf node pointing to left transaction and right transaction?
+            #hash left trans
+            hashL = hashes.Hash(hashes.SHA256(), backend=default_backend())
+            hashL.update(left_tree.__str__())
+            hashL.finalize()
+
+            #hash right trans
+            if(right_tree is not None):
+                hashR = hashes.Hash(hashes.SHA256(), backend=default_backend())
+                hashR.update(right_tree.__str__())
+                hashR.finalize()
+            else: # right transaction = None
+                hashR = hashL # replicate left sibling-transaction hash
+
+            self.hashL = hashL
+            self.hashR = hashR
+            self.hash = hashL + hashR
+            self.left_tree = left_tree
+            self.right_tree = right_tree
+            self.parent = None
+        else: # non-leaf node with left and right children trees
+            self.hashL = left_tree.hash
+            self.hashR = right_tree.hash
+            self.hash = self.hashL + self.hashR
+            self.left_tree = left_tree
+            self.right_tree = right_tree
+            self.parent = None
+            left_tree.parent = self
+            right_tree.parent = self
+
+    def get_right_sibling(self):
+        if self.parent.hashR == self.hash: # right most child
+            return None
+        return self.parent.right_tree
+
+    def update_hashes(self,bleft_insert):
+        if(isinstance(self.left_tree, Transaction)): # leaf node
+            if(bleft_insert): # transaction has been inserted left => hash and replicate right
+                hashL = hashes.Hash(hashes.SHA256(), backend=default_backend())
+                hashL.update(self.left_tree.__str__())
+                hashL.finalize()
+                self.hashL = hashL
+                self.hashR = hashL
+            else: # transaction has been inserted right => hash
+                hashR = hashes.Hash(hashes.SHA256(), backend=default_backend())
+                hashR.update(self.right_tree.__str__())
+                hashR.finalize()
+                self.hashR = hashR
+        else: # non-leaf node
+            self.hashL = self.left_tree.hash
+            self.hashR = self.right_tree.hash
+        
+        self.hash = self.hashL + self.hashR
+        
+        if self.parent is None: # reached the root - recursion base case
+            return
+
+        rs = self.get_right_sibling()
+        if rs is not None: # replicate right
+            rs.hashL = self.hashL
+            rs.hashR = self.hashR
+            rs.hash = self.hash
+
+        self.parent.update_hashes(False) # recursion step
 
 
+
+
+class MerkleRoot(): # full merkle tree (singleton)
+    __instance = None
+    # merkleroot: MerkleTree # root of the tree
+    # t: int # num of transactions
+    # lvl: int # num of levels in the tree
+    # lm_leaf: MerkleTree # left-most leaf with 1-2 empty children
+
+    @staticmethod
+    def getInstance():
+      return MerkleRoot.__instance
+
+    def __init__(self, trans):
+        """ Virtually private constructor. """
+        if MerkleRoot.__instance != None:
+            raise Exception("Scrooge class is a singleton!")
+        else:
+            MerkleRoot.__instance = self
+        self.merkleroot = MerkleTree(trans, None, None)
+        self.t = 1
+        self.lvl = 2
+        self.lm_leaf = self.merkleroot
+
+    def insert_transaction(self,trans):
+        self.t += 1
+        n = math.ceil(math.log2(self.t))
+        l = math.pow(2,n)
+        lvl = math.log2(l) + 1
+        if(lvl == self.lvl):
+            if(self.lm_leaf.left_tree is None):
+                self.lm_leaf.left_tree = trans
+                self.lm_leaf.update_hashes(True)
+            elif(self.lm_leaf.right_tree is None):
+                self.lm_leaf.right_tree = trans
+                self.lm_leaf.update_hashes(False)
+                if(l > self.t):
+                    self.update_lm_leaf(self.lm_leaf)
+        else: # expand tree
+            self.expand_tree(l,lvl,trans)
+            self.lvl = lvl
+            self.lm_leaf.left_tree = trans
+            self.lm_leaf.update_hashes(True)
+
+
+    def update_lm_leaf(self, node):
+        rs = node.get_right_sibling()
+        if(rs is not None):
+            new_lm_leaf = rs
+            while(True):
+                if(new_lm_leaf.left_tree is None):
+                    break
+                new_lm_leaf = new_lm_leaf.left_tree
+            self.lm_leaf = new_lm_leaf
+            return
+        self.update_lm_leaf(node.parent)
+    
+    def expand_tree(self, leaves, lvls, trans):
+        nodes = [trans]
+        for i in range(1, leaves/2):
+            nodes.append(None)
+        tree = MerkleTree(nodes.pop(0),nodes.pop(0),None)
+        self.lm_leaf = tree
+        nodes.append(tree)
+        root = self.expand_treeH(nodes, self.lm_leaf)
+        self.merkleroot = MerkleTree(self.merkleroot, root, None)
+
+    
+    def expand_treeH(self, nodes, left_sibling):
+        if(len(nodes) == 1):
+            return nodes[0]
+        tree = MerkleTree(nodes.pop(0), nodes.pop(0), left_sibling)
+        nodes.append(tree)
+        self.expand_treeH(nodes,left_sibling)
+
+            
 
 
 def simulation():
