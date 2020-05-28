@@ -5,6 +5,9 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 import random
 import msvcrt
 import math
+import string
+from merklelib import MerkleTree
+
 
 
 class Coin():
@@ -28,6 +31,7 @@ class User():
         # get public key
         self.public_key = self._private_key.public_key()
         self.coins = []
+        self.received_transactions = []
     
     def add_coin(self, coin):
         self.coins.append(coin)
@@ -53,9 +57,37 @@ class User():
 
         #Send the transaction to Scrooge to verify it
         Scrooge.getInstance().verify_trans(trans, bFirstTrans, log_file)
+
+        return trans
     
     def sign(self, coin):
         return self._private_key.sign(coin, hashes.SHA256())
+
+    def check_my_transactions(self, log_file):
+        
+        # generate an audit proof 
+        tree = Scrooge.getInstance().merkleTree
+
+        for trans in self.received_transactions:
+            proof = tree.get_proof(trans.__str__()) 
+
+            #now verify that trans is in the tree
+            if tree.verify_leaf_inclusion(trans.__str__(), proof):
+                print("#################### User Confirmation Sent ####################")
+                print(trans.ID + " is PUBLISHED")
+                if log_file != None:
+                    log_file.write("#################### User Confirmation Sent ####################\n")
+                    log_file.write(trans.ID + " is PUBLISHED \n")
+                    log_file.flush()
+            else:
+                print("#################### User Confirmation Sent ####################")
+                print(trans.ID + " is NOT PUBLISHED ")
+                if log_file != None:
+                    log_file.write("################### User Confirmation Sent ################\n")
+                    log_file.write(trans.ID + " is NOT PUBLISHED \n")
+                    log_file.flush()
+
+        self.received_transactions = []
 
 
         
@@ -80,6 +112,8 @@ class Scrooge(User):
             self.users = []
             self.first_block = True
             self.finalHashPtr = None
+            self.merkleTree = MerkleTree([], hashfunc)
+            self.active_recepients = []
             
     def create_coin(self, log_file):
         coin = Coin()
@@ -88,6 +122,11 @@ class Scrooge(User):
 
     def verify_trans(self, trans, bFirstTrans, log_file):
         
+        if trans.pbk_receiver != self.public_key:
+            self.active_recepients.append(trans.pbk_receiver)
+            recepient = self.users[trans.pbk_receiver]
+            recepient.received_transactions.append(trans)
+
         trans_valid = True
 
         double_spending_attack = False
@@ -150,9 +189,12 @@ class Scrooge(User):
         
 
     def publish_block(self, log_file):
+
         #Perform the actual transactions (add and remove coins)
         block_trans = []
         for trans in self.buffer:
+            #append the transaction to the tree
+            self.merkleTree.append(trans.__str__())
             if not trans.bFirstTrans:
                 receiver = self.users[trans.pbk_receiver]
                 if self.public_key == trans.pbk_sender:
@@ -170,6 +212,7 @@ class Scrooge(User):
                     coin.last_trans = trans
 
             block_trans.append(trans)
+    
         
         #empty the buffer
         self.buffer = []
@@ -199,6 +242,14 @@ class Scrooge(User):
         # DONE: Print the blockchain after a new block is 
         if log_file != None:
             print_block_chain(self.finalHashPtr, log_file)
+        
+        #send users' confirmations:
+        for pbk_receiver in self.active_recepients:
+            if pbk_receiver != self.public_key:
+                receiver = self.users[pbk_receiver]
+                receiver.check_my_transactions(log_file)
+        
+        self.active_recepients = []
 
 
 
@@ -315,170 +366,11 @@ class FinalHashPtr(HashPtr):
     
 
 
-class MerkleTree():
-    '''
-    A merkle tree could either be a leaf node or a non-leaf node
-    Each node (leaf/non-leaf) has:
-        a left child
-        a right child
-        a parent node
-        a hash of the left child
-        a hash of the right child
-        a hash (combination of the two children hashes)
-    A leaf node's children are transactions, while a non-leaf node's children are merkle trees.
-    A leaf node is linked to its children transactions (one-way link), 
-    while in a non-leaf node the parent is linked to the children and the children to the parent (double-link).
-    '''
-
-    def __init__(self, left_tree, right_tree, left_sibling):
-        if(left_tree == None and right_tree == None): # leaf node pointing to None transactions
-            self.hashL = left_sibling.hashL # replicate left sibling's hash
-            self.hashR = left_sibling.hashR
-            self.hash = self.hashL + self.hashR
-            self.left_tree = left_tree
-            self.right_tree = right_tree
-            self.parent = None
-
-        elif isinstance(left_tree,Transaction) : # leaf node pointing to left transaction and right transaction?
-            #hash left trans
-            hashL = hashes.Hash(hashes.SHA256(), backend=default_backend())
-            hashL.update(left_tree.__str__())
-            hashL.finalize()
-
-            #hash right trans
-            if(right_tree is not None):
-                hashR = hashes.Hash(hashes.SHA256(), backend=default_backend())
-                hashR.update(right_tree.__str__())
-                hashR.finalize()
-            else: # right transaction = None
-                hashR = hashL # replicate left sibling-transaction hash
-
-            self.hashL = hashL
-            self.hashR = hashR
-            self.hash = hashL + hashR
-            self.left_tree = left_tree
-            self.right_tree = right_tree
-            self.parent = None
-        else: # non-leaf node with left and right children trees
-            self.hashL = left_tree.hash
-            self.hashR = right_tree.hash
-            self.hash = self.hashL + self.hashR
-            self.left_tree = left_tree
-            self.right_tree = right_tree
-            self.parent = None
-            left_tree.parent = self
-            right_tree.parent = self
-
-    def get_right_sibling(self):
-        if self.parent.hashR == self.hash: # right most child
-            return None
-        return self.parent.right_tree
-
-    def update_hashes(self,bleft_insert):
-        if(isinstance(self.left_tree, Transaction)): # leaf node
-            if(bleft_insert): # transaction has been inserted left => hash and replicate right
-                hashL = hashes.Hash(hashes.SHA256(), backend=default_backend())
-                hashL.update(self.left_tree.__str__())
-                hashL.finalize()
-                self.hashL = hashL
-                self.hashR = hashL
-            else: # transaction has been inserted right => hash
-                hashR = hashes.Hash(hashes.SHA256(), backend=default_backend())
-                hashR.update(self.right_tree.__str__())
-                hashR.finalize()
-                self.hashR = hashR
-        else: # non-leaf node
-            self.hashL = self.left_tree.hash
-            self.hashR = self.right_tree.hash
-        
-        self.hash = self.hashL + self.hashR
-        
-        if self.parent is None: # reached the root - recursion base case
-            return
-
-        rs = self.get_right_sibling()
-        if rs is not None: # replicate right
-            rs.hashL = self.hashL
-            rs.hashR = self.hashR
-            rs.hash = self.hash
-
-        self.parent.update_hashes(False) # recursion step
-
-
-
-class MerkleRoot(): # full merkle tree (singleton)
-    __instance = None
-    # merkleroot: MerkleTree # root of the tree
-    # t: int # num of transactions
-    # lvl: int # num of levels in the tree
-    # lm_leaf: MerkleTree # left-most leaf with 1-2 empty children
-
-    @staticmethod
-    def getInstance():
-      return MerkleRoot.__instance
-
-    def __init__(self, trans):
-        """ Virtually private constructor. """
-        if MerkleRoot.__instance != None:
-            raise Exception("Scrooge class is a singleton!")
-        else:
-            MerkleRoot.__instance = self
-        self.merkleroot = MerkleTree(trans, None, None)
-        self.t = 1
-        self.lvl = 2
-        self.lm_leaf = self.merkleroot
-
-    def insert_transaction(self,trans):
-        self.t += 1
-        n = math.ceil(math.log2(self.t))
-        l = math.pow(2,n)
-        lvl = math.log2(l) + 1
-        if(lvl == self.lvl):
-            if(self.lm_leaf.left_tree is None):
-                self.lm_leaf.left_tree = trans
-                self.lm_leaf.update_hashes(True)
-            elif(self.lm_leaf.right_tree is None):
-                self.lm_leaf.right_tree = trans
-                self.lm_leaf.update_hashes(False)
-                if(l > self.t):
-                    self.update_lm_leaf(self.lm_leaf)
-        else: # expand tree
-            self.expand_tree(l,lvl,trans)
-            self.lvl = lvl
-            self.lm_leaf.left_tree = trans
-            self.lm_leaf.update_hashes(True)
-
-
-    def update_lm_leaf(self, node):
-        rs = node.get_right_sibling()
-        if(rs is not None):
-            new_lm_leaf = rs
-            while(True):
-                if(new_lm_leaf.left_tree is None):
-                    break
-                new_lm_leaf = new_lm_leaf.left_tree
-            self.lm_leaf = new_lm_leaf
-            return
-        self.update_lm_leaf(node.parent)
+def hashfunc(trans_str):
+    hash_trans = hashes.Hash(hashes.SHA256(), backend=default_backend())
+    hash_trans.update(trans_str)
+    return hash_trans.finalize()
     
-    def expand_tree(self, leaves, lvls, trans):
-        nodes = [trans]
-        for i in range(1, leaves/2):
-            nodes.append(None)
-        tree = MerkleTree(nodes.pop(0),nodes.pop(0),None)
-        self.lm_leaf = tree
-        nodes.append(tree)
-        root = self.expand_treeH(nodes, self.lm_leaf)
-        self.merkleroot = MerkleTree(self.merkleroot, root, None)
-
-    
-    def expand_treeH(self, nodes, left_sibling):
-        if(len(nodes) == 1):
-            return nodes[0]
-        tree = MerkleTree(nodes.pop(0), nodes.pop(0), left_sibling)
-        nodes.append(tree)
-        self.expand_treeH(nodes,left_sibling)
-
 
 
 def print_pbk_key(key):
@@ -492,8 +384,9 @@ def print_pbk_key(key):
 
 
 def print_users_public_keys(users, log_file):
-    print("###################### USERS' PUBLIC KEYS ######################")
-    log_file.write("###################### USERS' PUBLIC KEYS ######################\n")
+    for i in range(0,3):
+        print("###################### USERS' PUBLIC KEYS ######################")
+        log_file.write("###################### USERS' PUBLIC KEYS ######################\n")
     
     for user_pbk_key in users:
         user = users[user_pbk_key]
@@ -536,8 +429,8 @@ def print_block_under_construction(buffer, log_file):
 def print_block_chain(final_hash_ptr, log_file):
 
     for i in range(0,3):
-        print("########################## BLOCKCHAIN ##########################")
-        log_file.write("########################## BLOCKCHAIN ##########################\n")
+        print("###################### START OF BLOCKCHAIN #####################")
+        log_file.write("###################### START OF BLOCKCHAIN #####################\n")
     log_file.flush()
 
     current_block = final_hash_ptr.trans
@@ -641,7 +534,7 @@ def initialize_system(log_file):
         users[user.public_key] = user
 
     scrooge = Scrooge()
-    scrooge.users = users 
+    scrooge.users = users
     
     #Scrooge creates 1K coins, and pays 10 per user 
     print("Scrooge creating 1000 coins ...")   
@@ -759,6 +652,7 @@ def simulation():
     
 
 def main():
+    
     simulation()
 
 
