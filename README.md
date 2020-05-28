@@ -16,4 +16,5 @@ First, each user's data is printed out, followed by the initial blockchain .
 
 **Dependencies:**
 
-`pip install cryptography`
+1. `pip install cryptography`
+2. `pip install merklelib`
